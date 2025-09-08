@@ -109,11 +109,13 @@ func (r *Engine) Load() error {
 
 	ts := pongo2.NewSet("default", loaders...)
 
-	globalContext, err := convertToContext(r.globalData)
-	if err != nil {
+	// we have to set the template set first
+	r.templateSet = ts
+
+	// then we apply global data
+	if err := r.GlobalContext(r.globalData); err != nil {
 		return fmt.Errorf("failed to convert global data to context: %w", err)
 	}
-	ts.Globals.Update(globalContext)
 
 	for n, fn := range r.funcMap {
 		if !pongo2.FilterExists(n) {
@@ -123,18 +125,118 @@ func (r *Engine) Load() error {
 		}
 	}
 
-	r.templateSet = ts
+	return nil
+}
+
+func (r *Engine) GlobalContext(data any) error {
+	globalContext, err := convertToContext(data)
+	if err != nil {
+		return fmt.Errorf("failed to convert global data to context: %w", err)
+	}
+
+	// store the global data for later use
+	maps.Copy(r.globalData, globalContext)
+
+	// if templateSet is available we update it immediately
+	if r.templateSet != nil {
+		r.templateSet.Globals.Update(globalContext)
+	}
 
 	return nil
 }
 
-// Render finds a template by `name` and executes it with the given `data`.
+func (r *Engine) RegisterFilter(name string, fn func(input any, param any) (any, error)) error {
+	pongo2Filter := func(in *pongo2.Value, param *pongo2.Value) (*pongo2.Value, *pongo2.Error) {
+		var inputVal any = in.Interface()
+		var paramVal any
+		if param != nil {
+			paramVal = param.Interface()
+		}
+
+		result, err := fn(inputVal, paramVal)
+		if err != nil {
+			return nil, &pongo2.Error{Sender: "custom_filter", OrigError: err}
+		}
+		return pongo2.AsValue(result), nil
+	}
+
+	if !pongo2.FilterExists(name) {
+		pongo2.RegisterFilter(name, pongo2Filter)
+		return nil
+	}
+
+	return fmt.Errorf("filter %s already exists", name)
+}
+
+// RenderString renders a template from a string content with the given `data`.
+// The output is written to any provided `io.Writer`s and is also returned as a string.
+//
+// Unlike RenderTemplate, this method takes template content directly instead of a filename.
+// The template is parsed each time (no caching) but benefits from global data and filters.
+//
+// If the provided `data` is not a map[string]any, it will be converted to one
+// by marshaling it to JSON and then unmarshaling. Be aware of the performance
+// implications and that this respects `json` struct tags.
+func (r *Engine) RenderString(templateContent string, data any, out ...io.Writer) (string, error) {
+	// Create template from string content
+	tmpl, err := r.templateSet.FromString(templateContent)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse template string: %w", err)
+	}
+
+	viewContext, err := convertToContext(data)
+	if err != nil {
+		return "", fmt.Errorf("failed to convert data to context: %w", err)
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteWriter(viewContext, &buf); err != nil {
+		return "", fmt.Errorf("failed to execute template: %w", err)
+	}
+
+	renderedStr := buf.String()
+
+	// Write to provided writers
+	if len(out) > 0 {
+		for _, w := range out {
+			if _, err := w.Write([]byte(renderedStr)); err != nil {
+				return "", err
+			}
+		}
+	}
+
+	return renderedStr, nil
+}
+
+// Render intelligently renders either a template file or template string content.
+// It auto-detects whether the `name` parameter contains template syntax ({{ or {%)
+// and calls either RenderString for template content or RenderTemplate for filenames.
+//
+// Template detection logic:
+// - If `name` contains "{{" or "{%" it's treated as template content (calls RenderString)
+// - Otherwise it's treated as a template filename (calls RenderTemplate)
+//
+// This method provides backward compatibility while enabling both use cases with a single API.
+func (r *Engine) Render(name string, data any, out ...io.Writer) (string, error) {
+	// detect if this is template content or a filename
+	if isTemplateContent(name) {
+		return r.RenderString(name, data, out...)
+	}
+	return r.RenderTemplate(name, data, out...)
+}
+
+// isTemplateContent detects if a string contains template syntax
+func isTemplateContent(s string) bool {
+	return strings.Contains(s, "{{") || strings.Contains(s, "{%")
+}
+
+// RenderTemplate finds a template by `name` and executes it with the given `data`.
 // The output is written to any provided `io.Writer`s and is also returned as a string.
 //
 // If the provided `data` is not a map[string]any, it will be converted to one
 // by marshaling it to JSON and then unmarshaling. Be aware of the performance
 // implications and that this respects `json` struct tags.
-func (r *Engine) Render(name string, data any, out ...io.Writer) (string, error) {
+func (r *Engine) RenderTemplate(name string, data any, out ...io.Writer) (string, error) {
 	templatePath := name
 	if !strings.HasSuffix(templatePath, r.tplExt) {
 		templatePath += r.tplExt
