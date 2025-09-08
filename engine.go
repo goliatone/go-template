@@ -14,11 +14,6 @@ import (
 	"github.com/flosch/pongo2/v6"
 )
 
-func init() {
-	pongo2.RegisterFilter("trim", filterTrim)
-	pongo2.RegisterFilter("lowerfirst", filterLowerFirst)
-}
-
 type Renderer interface {
 	// Render finds a template by `name` and executes if with
 	// the given `data`.
@@ -35,6 +30,7 @@ type Engine struct {
 	fs          fs.FS
 	baseDir     string
 	funcMap     map[string]any
+	globalData  map[string]any
 }
 
 type Option func(*Engine)
@@ -57,6 +53,12 @@ func WithTemplateFunc(funcs map[string]any) Option {
 	}
 }
 
+func WithGlobalData(data map[string]any) Option {
+	return func(e *Engine) {
+		maps.Copy(e.globalData, data)
+	}
+}
+
 func WithExtension(ext string) Option {
 	return func(e *Engine) {
 		if !strings.HasPrefix(ext, ".") {
@@ -69,9 +71,10 @@ func WithExtension(ext string) Option {
 
 func NewRenderer(opts ...Option) (*Engine, error) {
 	e := &Engine{
-		templates: make(map[string]*pongo2.Template),
-		tplExt:    ".tpl",
-		funcMap:   defaultFuncMaps(),
+		templates:  make(map[string]*pongo2.Template),
+		tplExt:     ".tpl",
+		funcMap:    defaultFuncMaps(),
+		globalData: make(map[string]any),
 	}
 
 	for _, opt := range opts {
@@ -106,13 +109,19 @@ func (r *Engine) Load() error {
 
 	ts := pongo2.NewSet("default", loaders...)
 
-	ts.Globals.Update(r.funcMap)
+	globalContext, err := convertToContext(r.globalData)
+	if err != nil {
+		return fmt.Errorf("failed to convert global data to context: %w", err)
+	}
+	ts.Globals.Update(globalContext)
 
-	// for n, fn := range r.funcMap {
-	// 	if !pongo2.FilterExists(n) {
-	// 		pongo2.RegisterFilter(n)
-	// 	}
-	// }
+	for n, fn := range r.funcMap {
+		if !pongo2.FilterExists(n) {
+			if pfn, ok := fn.(func(*pongo2.Value, *pongo2.Value) (*pongo2.Value, *pongo2.Error)); ok {
+				pongo2.RegisterFilter(n, pfn)
+			}
+		}
+	}
 
 	r.templateSet = ts
 
@@ -136,21 +145,9 @@ func (r *Engine) Render(name string, data any, out ...io.Writer) (string, error)
 		return "", err
 	}
 
-	viewContext := make(pongo2.Context)
-	switch val := data.(type) {
-	case map[string]any:
-		maps.Copy(viewContext, val)
-	default:
-		b, err := json.Marshal(data)
-		if err != nil {
-			return "", err
-		}
-		m := map[string]any{}
-		err = json.Unmarshal(b, &m)
-		if err != nil {
-			return "", err
-		}
-		maps.Copy(viewContext, m)
+	viewContext, err := convertToContext(data)
+	if err != nil {
+		return "", fmt.Errorf("failed to convert data to context: %w", err)
 	}
 
 	var buf bytes.Buffer
@@ -194,8 +191,34 @@ func (r *Engine) getTemplate(path string) (*pongo2.Template, error) {
 
 func defaultFuncMaps() map[string]any {
 	out := map[string]any{}
-	// out["lowerfirst"] = filterLowerFirst
+	out["trim"] = filterTrim
+	out["lowerfirst"] = filterLowerFirst
 	return out
+}
+
+// convertToContext converts any data to a pongo2.Context map.
+// It always uses JSON marshaling/unmarshaling to ensure consistent behavior
+// and proper handling of structs with json tags.
+func convertToContext(data any) (pongo2.Context, error) {
+	viewContext := make(pongo2.Context)
+	switch data.(type) {
+	case nil:
+		// Return empty context for nil data
+		return viewContext, nil
+	default:
+		// Always use JSON conversion to handle structs properly
+		b, err := json.Marshal(data)
+		if err != nil {
+			return nil, err
+		}
+		m := map[string]any{}
+		err = json.Unmarshal(b, &m)
+		if err != nil {
+			return nil, err
+		}
+		maps.Copy(viewContext, m)
+	}
+	return viewContext, nil
 }
 
 func filterLowerFirst(in *pongo2.Value, param *pongo2.Value) (*pongo2.Value, *pongo2.Error) {
@@ -203,8 +226,32 @@ func filterLowerFirst(in *pongo2.Value, param *pongo2.Value) (*pongo2.Value, *po
 		return pongo2.AsValue(""), nil
 	}
 	t := in.String()
-	r, size := utf8.DecodeRuneInString(t)
-	return pongo2.AsValue(strings.ToLower(string(r)) + t[size:]), nil
+
+	// find the first non whitespace character
+	var firstNonWhitespaceIndex int
+	var firstRune rune
+	var firstRuneSize int
+
+	for i, r := range t {
+		if !strings.ContainsRune(" \t\n\r", r) {
+			firstNonWhitespaceIndex = i
+			firstRune = r
+			firstRuneSize = utf8.RuneLen(r)
+			break
+		}
+	}
+
+	// not whitespace character, return original string
+	if firstRune == 0 {
+		return pongo2.AsValue(t), nil
+	}
+
+	// build result = prefix + lowercased first letter + rest
+	prefix := t[:firstNonWhitespaceIndex]
+	loweredRune := strings.ToLower(string(firstRune))
+	rest := t[firstNonWhitespaceIndex+firstRuneSize:]
+
+	return pongo2.AsValue(prefix + loweredRune + rest), nil
 }
 
 func filterTrim(in *pongo2.Value, param *pongo2.Value) (*pongo2.Value, *pongo2.Error) {
