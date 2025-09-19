@@ -2,6 +2,7 @@ package template
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -25,44 +26,89 @@ type PostHook func(ctx *HookContext) (string, error)
 
 type HookManager struct {
 	mu        sync.RWMutex
-	preHooks  []PreHook
-	postHooks []PostHook
+	preHooks  map[int][]PreHook
+	postHooks map[int][]PostHook
 }
 
 func NewHooksManager() *HookManager {
 	return &HookManager{
-		preHooks:  make([]PreHook, 0),
-		postHooks: make([]PostHook, 0),
+		preHooks:  make(map[int][]PreHook, 0),
+		postHooks: make(map[int][]PostHook, 0),
 	}
 }
 
 // AddPreHook registers a pre generation hook
-func (e *HookManager) AddPreHook(hook PreHook) {
+func (e *HookManager) AddPreHook(hook PreHook, priority ...int) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.preHooks = append(e.preHooks, hook)
+
+	p := 0
+	if len(priority) > 0 {
+		p = priority[0]
+	}
+
+	hooks, ok := e.preHooks[p]
+	if !ok {
+		hooks = make([]PreHook, 0)
+	}
+
+	e.preHooks[p] = append(hooks, hook)
+
 }
 
 // AddPostHook registers a post generation hook
-func (e *HookManager) AddPostHook(hook PostHook) {
+func (e *HookManager) AddPostHook(hook PostHook, priority ...int) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.postHooks = append(e.postHooks, hook)
+
+	p := 0
+	if len(priority) > 0 {
+		p = priority[0]
+	}
+
+	hooks, ok := e.postHooks[p]
+	if !ok {
+		hooks = make([]PostHook, 0)
+	}
+
+	e.postHooks[p] = append(hooks, hook)
 }
 
 func (e *HookManager) PreHooks() []PreHook {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	out := make([]PreHook, len(e.preHooks))
-	copy(out, e.preHooks)
+
+	keys := []int{}
+	for k := range e.preHooks {
+		keys = append(keys, k)
+	}
+
+	sort.Ints(keys)
+
+	out := make([]PreHook, 0)
+	for _, priority := range keys {
+		out = append(out, e.preHooks[priority]...)
+	}
+
 	return out
 }
 
 func (e *HookManager) PostHooks() []PostHook {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	out := make([]PostHook, len(e.postHooks))
-	copy(out, e.postHooks)
+
+	keys := []int{}
+	for k := range e.postHooks {
+		keys = append(keys, k)
+	}
+
+	sort.Ints(keys)
+
+	out := make([]PostHook, 0)
+	for _, priority := range keys {
+		out = append(out, e.postHooks[priority]...)
+	}
+
 	return out
 }
 
@@ -175,11 +221,12 @@ func (h *CommonHooks) ValidateDataHook(requiredFields []string) PreHook {
 	return func(ctx *HookContext) error {
 		data, ok := ctx.Data.(map[string]any)
 		if !ok {
-			newData, err := convertToContext(data)
+			newData, err := convertToContext(ctx.Data)
 			if err != nil {
 				return fmt.Errorf("unable to coerce data to map: %w", err)
 			}
 			data = newData
+			ctx.Data = newData
 		}
 
 		for _, field := range requiredFields {
@@ -197,11 +244,12 @@ func (h *CommonHooks) SetDefaultsHook(defaults map[string]any) PreHook {
 		data, ok := ctx.Data.(map[string]any)
 		if !ok {
 			// Convert to map if it's not already
-			data, err := convertToContext(data)
+			newData, err := convertToContext(ctx.Data)
 			if err != nil {
 				return fmt.Errorf("unable to coerce data to map: %w", err)
 			}
-			ctx.Data = data
+			data = newData
+			ctx.Data = newData
 		}
 
 		for key, value := range defaults {
