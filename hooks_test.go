@@ -360,6 +360,448 @@ func TestHooks_PrioritySorting_EmptyHooks(t *testing.T) {
 	require.Empty(t, postHooks)
 }
 
+func TestHookChain_Constructor(t *testing.T) {
+	// Test empty constructor
+	chain := template.NewHookChain()
+	require.NotNil(t, chain)
+
+	// Test with pre-hooks option
+	preHook1 := func(ctx *template.HookContext) error {
+		return nil
+	}
+	preHook2 := func(ctx *template.HookContext) error {
+		return nil
+	}
+
+	chain = template.NewHookChain(template.WithPreHooksChain(preHook1, preHook2))
+	require.NotNil(t, chain)
+
+	// Test with post-hooks option
+	postHook1 := func(ctx *template.HookContext) (string, error) {
+		return ctx.Output, nil
+	}
+	postHook2 := func(ctx *template.HookContext) (string, error) {
+		return ctx.Output, nil
+	}
+
+	chain = template.NewHookChain(template.WithPostHooksChain(postHook1, postHook2))
+	require.NotNil(t, chain)
+
+	// Test with both options
+	chain = template.NewHookChain(
+		template.WithPreHooksChain(preHook1),
+		template.WithPostHooksChain(postHook1),
+	)
+	require.NotNil(t, chain)
+}
+
+func TestHookChain_AddHooks(t *testing.T) {
+	chain := template.NewHookChain()
+
+	var executionOrder []string
+
+	// Add pre-hooks using method chaining
+	preHook1 := func(ctx *template.HookContext) error {
+		executionOrder = append(executionOrder, "pre1")
+		return nil
+	}
+	preHook2 := func(ctx *template.HookContext) error {
+		executionOrder = append(executionOrder, "pre2")
+		return nil
+	}
+
+	chain.AddPreHook(preHook1).AddPreHook(preHook2)
+
+	// Add post-hooks using method chaining
+	postHook1 := func(ctx *template.HookContext) (string, error) {
+		executionOrder = append(executionOrder, "post1")
+		return "post1-" + ctx.Output, nil
+	}
+	postHook2 := func(ctx *template.HookContext) (string, error) {
+		executionOrder = append(executionOrder, "post2")
+		return "post2-" + ctx.Output, nil
+	}
+
+	chain.AddPostHook(postHook1).AddPostHook(postHook2)
+
+	// Execute and verify chaining worked
+	ctx := &template.HookContext{
+		Data:     map[string]any{},
+		Metadata: make(map[string]any),
+		Output:   "original",
+	}
+
+	err := chain.ExecutePreHooks(ctx)
+	require.NoError(t, err)
+
+	result, err := chain.ExecutePostHooks(ctx)
+	require.NoError(t, err)
+
+	// Verify execution order and result
+	expectedOrder := []string{"pre1", "pre2", "post1", "post2"}
+	require.Equal(t, expectedOrder, executionOrder)
+	require.Equal(t, "post2-post1-original", result)
+}
+
+func TestHookChain_ExecutePreHooks(t *testing.T) {
+	var executionOrder []string
+	var receivedData []any
+
+	hook1 := func(ctx *template.HookContext) error {
+		executionOrder = append(executionOrder, "hook1")
+		receivedData = append(receivedData, ctx.Data)
+		// Modify data
+		if data, ok := ctx.Data.(map[string]any); ok {
+			data["hook1"] = "executed"
+		}
+		return nil
+	}
+
+	hook2 := func(ctx *template.HookContext) error {
+		executionOrder = append(executionOrder, "hook2")
+		receivedData = append(receivedData, ctx.Data)
+		// Modify metadata
+		ctx.Metadata["hook2"] = "executed"
+		return nil
+	}
+
+	hook3 := func(ctx *template.HookContext) error {
+		executionOrder = append(executionOrder, "hook3")
+		receivedData = append(receivedData, ctx.Data)
+		return nil
+	}
+
+	chain := template.NewHookChain(template.WithPreHooksChain(hook1, hook2, hook3))
+
+	ctx := &template.HookContext{
+		TemplateName: "test",
+		Data:         map[string]any{"initial": "value"},
+		Metadata:     make(map[string]any),
+		IsPreHook:    true,
+	}
+
+	err := chain.ExecutePreHooks(ctx)
+	require.NoError(t, err)
+
+	// Verify execution order
+	expectedOrder := []string{"hook1", "hook2", "hook3"}
+	require.Equal(t, expectedOrder, executionOrder)
+
+	// Verify data modifications were applied
+	data := ctx.Data.(map[string]any)
+	require.Equal(t, "executed", data["hook1"])
+	require.Equal(t, "executed", ctx.Metadata["hook2"])
+
+	// Verify all hooks received the same data reference (mutations persist)
+	require.Len(t, receivedData, 3)
+}
+
+func TestHookChain_ExecutePreHooks_ErrorHandling(t *testing.T) {
+	var executionOrder []string
+
+	hook1 := func(ctx *template.HookContext) error {
+		executionOrder = append(executionOrder, "hook1")
+		return nil
+	}
+
+	hook2 := func(ctx *template.HookContext) error {
+		executionOrder = append(executionOrder, "hook2")
+		return fmt.Errorf("hook2 failed")
+	}
+
+	hook3 := func(ctx *template.HookContext) error {
+		executionOrder = append(executionOrder, "hook3")
+		return nil
+	}
+
+	chain := template.NewHookChain(template.WithPreHooksChain(hook1, hook2, hook3))
+
+	ctx := &template.HookContext{
+		Data:      map[string]any{},
+		Metadata:  make(map[string]any),
+		IsPreHook: true,
+	}
+
+	err := chain.ExecutePreHooks(ctx)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "hook2 failed")
+
+	// Verify execution stopped at the failing hook
+	expectedOrder := []string{"hook1", "hook2"}
+	require.Equal(t, expectedOrder, executionOrder)
+}
+
+func TestHookChain_ExecutePostHooks(t *testing.T) {
+	var executionOrder []string
+
+	hook1 := func(ctx *template.HookContext) (string, error) {
+		executionOrder = append(executionOrder, "hook1")
+		return "hook1-" + ctx.Output, nil
+	}
+
+	hook2 := func(ctx *template.HookContext) (string, error) {
+		executionOrder = append(executionOrder, "hook2")
+		// Verify ctx.Output was updated by previous hook
+		require.Contains(t, ctx.Output, "hook1-")
+		return "hook2-" + ctx.Output, nil
+	}
+
+	hook3 := func(ctx *template.HookContext) (string, error) {
+		executionOrder = append(executionOrder, "hook3")
+		require.Contains(t, ctx.Output, "hook2-hook1-")
+		return "hook3-" + ctx.Output, nil
+	}
+
+	chain := template.NewHookChain(template.WithPostHooksChain(hook1, hook2, hook3))
+
+	ctx := &template.HookContext{
+		TemplateName: "test",
+		Data:         map[string]any{},
+		Metadata:     make(map[string]any),
+		Output:       "original",
+		IsPreHook:    false,
+	}
+
+	result, err := chain.ExecutePostHooks(ctx)
+	require.NoError(t, err)
+
+	// Verify execution order
+	expectedOrder := []string{"hook1", "hook2", "hook3"}
+	require.Equal(t, expectedOrder, executionOrder)
+
+	// Verify output transformations
+	require.Equal(t, "hook3-hook2-hook1-original", result)
+	require.Equal(t, "hook3-hook2-hook1-original", ctx.Output)
+}
+
+func TestHookChain_ExecutePostHooks_ErrorHandling(t *testing.T) {
+	var executionOrder []string
+
+	hook1 := func(ctx *template.HookContext) (string, error) {
+		executionOrder = append(executionOrder, "hook1")
+		return "hook1-" + ctx.Output, nil
+	}
+
+	hook2 := func(ctx *template.HookContext) (string, error) {
+		executionOrder = append(executionOrder, "hook2")
+		return "", fmt.Errorf("hook2 failed")
+	}
+
+	hook3 := func(ctx *template.HookContext) (string, error) {
+		executionOrder = append(executionOrder, "hook3")
+		return "hook3-" + ctx.Output, nil
+	}
+
+	chain := template.NewHookChain(template.WithPostHooksChain(hook1, hook2, hook3))
+
+	ctx := &template.HookContext{
+		Data:     map[string]any{},
+		Metadata: make(map[string]any),
+		Output:   "original",
+	}
+
+	result, err := chain.ExecutePostHooks(ctx)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "hook2 failed")
+	require.Empty(t, result)
+
+	// Verify execution stopped at the failing hook
+	expectedOrder := []string{"hook1", "hook2"}
+	require.Equal(t, expectedOrder, executionOrder)
+}
+
+func TestHookChain_AsPreHook(t *testing.T) {
+	var executionOrder []string
+
+	hook1 := func(ctx *template.HookContext) error {
+		executionOrder = append(executionOrder, "chain-hook1")
+		return nil
+	}
+
+	hook2 := func(ctx *template.HookContext) error {
+		executionOrder = append(executionOrder, "chain-hook2")
+		return nil
+	}
+
+	chain := template.NewHookChain(template.WithPreHooksChain(hook1, hook2))
+
+	// Convert chain to a single PreHook
+	combinedPreHook := chain.AsPreHook()
+
+	// Use it in a hook manager
+	manager := template.NewHooksManager()
+	manager.AddPreHook(combinedPreHook, 5)
+
+	// Add individual hook for comparison
+	manager.AddPreHook(func(ctx *template.HookContext) error {
+		executionOrder = append(executionOrder, "individual-hook")
+		return nil
+	}, 10)
+
+	// Execute all hooks
+	hooks := manager.PreHooks()
+	ctx := &template.HookContext{
+		Data:      map[string]any{},
+		Metadata:  make(map[string]any),
+		IsPreHook: true,
+	}
+
+	for _, hook := range hooks {
+		err := hook(ctx)
+		require.NoError(t, err)
+	}
+
+	// Verify both chain hooks executed before individual hook (due to priority)
+	expectedOrder := []string{"chain-hook1", "chain-hook2", "individual-hook"}
+	require.Equal(t, expectedOrder, executionOrder)
+}
+
+func TestHookChain_AsPostHook(t *testing.T) {
+	var executionOrder []string
+
+	hook1 := func(ctx *template.HookContext) (string, error) {
+		executionOrder = append(executionOrder, "chain-hook1")
+		return "chain1-" + ctx.Output, nil
+	}
+
+	hook2 := func(ctx *template.HookContext) (string, error) {
+		executionOrder = append(executionOrder, "chain-hook2")
+		return "chain2-" + ctx.Output, nil
+	}
+
+	chain := template.NewHookChain(template.WithPostHooksChain(hook1, hook2))
+
+	// Convert chain to a single PostHook
+	combinedPostHook := chain.AsPostHook()
+
+	// Use it in a hook manager
+	manager := template.NewHooksManager()
+	manager.AddPostHook(combinedPostHook, 5)
+
+	// Add individual hook for comparison
+	manager.AddPostHook(func(ctx *template.HookContext) (string, error) {
+		executionOrder = append(executionOrder, "individual-hook")
+		return "individual-" + ctx.Output, nil
+	}, 10)
+
+	// Execute all hooks
+	hooks := manager.PostHooks()
+	ctx := &template.HookContext{
+		Data:     map[string]any{},
+		Metadata: make(map[string]any),
+		Output:   "original",
+	}
+
+	output := ctx.Output
+	for _, hook := range hooks {
+		var err error
+		output, err = hook(&template.HookContext{
+			Data:     ctx.Data,
+			Metadata: ctx.Metadata,
+			Output:   output,
+		})
+		require.NoError(t, err)
+	}
+
+	// Verify execution order and output transformation
+	expectedOrder := []string{"chain-hook1", "chain-hook2", "individual-hook"}
+	require.Equal(t, expectedOrder, executionOrder)
+	require.Equal(t, "individual-chain2-chain1-original", output)
+}
+
+func TestHookChain_EmptyChain(t *testing.T) {
+	chain := template.NewHookChain()
+
+	ctx := &template.HookContext{
+		Data:     map[string]any{"test": "data"},
+		Metadata: make(map[string]any),
+		Output:   "original",
+	}
+
+	// Test empty pre-hook chain
+	err := chain.ExecutePreHooks(ctx)
+	require.NoError(t, err)
+
+	// Test empty post-hook chain
+	result, err := chain.ExecutePostHooks(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "original", result)
+
+	// Test as converted hooks
+	preHook := chain.AsPreHook()
+	err = preHook(ctx)
+	require.NoError(t, err)
+
+	postHook := chain.AsPostHook()
+	result, err = postHook(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "original", result)
+}
+
+func TestHookChain_WithRenderer_Integration(t *testing.T) {
+	renderer, err := template.NewRenderer(template.WithBaseDir("testdata"))
+	require.NoError(t, err)
+
+	var executionMarkers []string
+
+	// Create a pre-hook chain
+	preChain := template.NewHookChain()
+	preChain.AddPreHook(func(ctx *template.HookContext) error {
+		executionMarkers = append(executionMarkers, "pre-chain-1")
+		return nil
+	})
+	preChain.AddPreHook(func(ctx *template.HookContext) error {
+		executionMarkers = append(executionMarkers, "pre-chain-2")
+		// Add default data
+		if data, ok := ctx.Data.(map[string]any); ok {
+			if _, exists := data["app_name"]; !exists {
+				data["app_name"] = "ChainApp"
+			}
+		}
+		return nil
+	})
+
+	// Create a post-hook chain
+	postChain := template.NewHookChain()
+	postChain.AddPostHook(func(ctx *template.HookContext) (string, error) {
+		executionMarkers = append(executionMarkers, "post-chain-1")
+		return "// Chain Header 1\n" + ctx.Output, nil
+	})
+	postChain.AddPostHook(func(ctx *template.HookContext) (string, error) {
+		executionMarkers = append(executionMarkers, "post-chain-2")
+		return "// Chain Header 2\n" + ctx.Output, nil
+	})
+
+	// Register chains as hooks
+	renderer.RegisterPreHook(preChain.AsPreHook())
+	renderer.RegisterPostHook(postChain.AsPostHook())
+
+	// Add an individual hook for comparison
+	renderer.RegisterPostHook(func(ctx *template.HookContext) (string, error) {
+		executionMarkers = append(executionMarkers, "individual-post")
+		return "// Individual Header\n" + ctx.Output, nil
+	})
+
+	result, err := renderer.RenderTemplate("simple", map[string]any{
+		"name": "Alice",
+	})
+	require.NoError(t, err)
+
+	// Verify execution order
+	expectedOrder := []string{
+		"pre-chain-1", "pre-chain-2",
+		"post-chain-1", "post-chain-2",
+		"individual-post",
+	}
+	require.Equal(t, expectedOrder, executionMarkers)
+
+	// Verify output contains chain transformations
+	require.Contains(t, result, "// Individual Header")
+	require.Contains(t, result, "// Chain Header 2")
+	require.Contains(t, result, "// Chain Header 1")
+	require.Contains(t, result, "Hello, Alice! Welcome to ChainApp.")
+}
+
 func TestHooks_HelperFunctions(t *testing.T) {
 	tests := []struct {
 		name         string
