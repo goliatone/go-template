@@ -383,6 +383,7 @@ func defaultFuncMaps() map[string]any {
 // ConvertToContext converts any data to a pongo2.Context map.
 // It always uses JSON marshaling/unmarshaling to ensure consistent behavior
 // and proper handling of structs with json tags.
+// TODO: Review to find a better way of doing this, don't want to expose pongo2.Context
 func ConvertToContext(data any) (pongo2.Context, error) {
 	viewContext := make(pongo2.Context)
 	switch data.(type) {

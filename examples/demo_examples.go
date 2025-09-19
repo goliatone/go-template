@@ -5,6 +5,7 @@ import (
 	"log"
 
 	"github.com/goliatone/go-template"
+	"github.com/goliatone/go-template/templatehooks"
 )
 
 func main() {
@@ -23,7 +24,7 @@ func demoCommonHooks() {
 	}
 
 	// Create common hooks instance
-	hooks := template.NewCommonHooks()
+	hooks := templatehooks.NewCommonHooks()
 
 	// Register pre-hooks for data validation and defaults
 	renderer.RegisterPreHook(hooks.ValidateDataHook([]string{"package_name"}))
