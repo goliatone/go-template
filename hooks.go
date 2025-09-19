@@ -15,9 +15,6 @@ type HookContext struct {
 	IsPreHook    bool
 }
 
-// GenerationHook is a function that can modify template data or output
-type GenerationHook func(ctx *HookContext) error
-
 type PreHook func(ctx *HookContext) error // modify Data or Metadata
 type PostHook func(ctx *HookContext) (string, error)
 
@@ -110,4 +107,89 @@ func (e *HookManager) PostHooks() []PostHook {
 	}
 
 	return out
+}
+
+// HookChain allows chaining multiple hooks together
+type HookChain struct {
+	preHooks  []PreHook
+	postHooks []PostHook
+}
+
+type HookChainOption func(*HookChain)
+
+func WithPreHooksChain(hooks ...PreHook) HookChainOption {
+	return func(hc *HookChain) {
+		hc.preHooks = append(hc.preHooks, hooks...)
+	}
+}
+
+func WithPostHooksChain(hooks ...PostHook) HookChainOption {
+	return func(hc *HookChain) {
+		hc.postHooks = append(hc.postHooks, hooks...)
+	}
+}
+
+// NewHookChain creates a new hook chain
+func NewHookChain(hooks ...HookChainOption) *HookChain {
+	c := &HookChain{
+		preHooks:  make([]PreHook, 0),
+		postHooks: make([]PostHook, 0),
+	}
+
+	for _, h := range hooks {
+		h(c)
+	}
+
+	return c
+}
+
+// AddPreHook adds a hook to the chain
+func (c *HookChain) AddPreHook(hook PreHook) *HookChain {
+	c.preHooks = append(c.preHooks, hook)
+	return c
+}
+
+// AddPreHook adds a hook to the chain
+func (c *HookChain) AddPostHook(hook PostHook) *HookChain {
+	c.postHooks = append(c.postHooks, hook)
+	return c
+}
+
+// Execute executes all hooks in the chain
+func (c *HookChain) ExecutePreHooks(ctx *HookContext) error {
+	for _, hook := range c.preHooks {
+		if err := hook(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *HookChain) ExecutePostHooks(ctx *HookContext) (string, error) {
+
+	response := ctx.Output
+	for _, hook := range c.postHooks {
+		if out, err := hook(ctx); err != nil {
+			return "", err
+		} else {
+			response = out
+			ctx.Output = out
+		}
+	}
+
+	return response, nil
+}
+
+// AsPreHook returns the chain as a single PreHook
+func (c *HookChain) AsPreHook() PreHook {
+	return func(ctx *HookContext) error {
+		return c.ExecutePreHooks(ctx)
+	}
+}
+
+// AsPostHook returns the chain as a single PostHook
+func (c *HookChain) AsPostHook() PostHook {
+	return func(ctx *HookContext) (string, error) {
+		return c.ExecutePostHooks(ctx)
+	}
 }
