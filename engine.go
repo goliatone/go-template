@@ -131,7 +131,7 @@ func (r *Engine) Load() error {
 }
 
 func (r *Engine) GlobalContext(data any) error {
-	globalContext, err := convertToContext(data)
+	globalContext, err := ConvertToContext(data)
 	if err != nil {
 		return fmt.Errorf("failed to convert global data to context: %w", err)
 	}
@@ -204,7 +204,7 @@ func (r *Engine) RenderString(templateContent string, data any, out ...io.Writer
 		return "", fmt.Errorf("failed to parse template string: %w", err)
 	}
 
-	viewContext, err := convertToContext(data)
+	viewContext, err := ConvertToContext(data)
 	if err != nil {
 		return "", fmt.Errorf("failed to convert data to context: %w", err)
 	}
@@ -312,7 +312,7 @@ func (r *Engine) RenderTemplate(name string, data any, out ...io.Writer) (string
 		return "", err
 	}
 
-	viewContext, err := convertToContext(data)
+	viewContext, err := ConvertToContext(data)
 	if err != nil {
 		return "", fmt.Errorf("failed to convert data to context: %w", err)
 	}
@@ -380,10 +380,10 @@ func defaultFuncMaps() map[string]any {
 	return out
 }
 
-// convertToContext converts any data to a pongo2.Context map.
+// ConvertToContext converts any data to a pongo2.Context map.
 // It always uses JSON marshaling/unmarshaling to ensure consistent behavior
 // and proper handling of structs with json tags.
-func convertToContext(data any) (pongo2.Context, error) {
+func ConvertToContext(data any) (pongo2.Context, error) {
 	viewContext := make(pongo2.Context)
 	switch data.(type) {
 	case nil:
