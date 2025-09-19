@@ -31,6 +31,7 @@ type Engine struct {
 	baseDir     string
 	funcMap     map[string]any
 	globalData  map[string]any
+	hooks       *HookManager
 }
 
 type Option func(*Engine)
@@ -75,6 +76,7 @@ func NewRenderer(opts ...Option) (*Engine, error) {
 		tplExt:     ".tpl",
 		funcMap:    defaultFuncMaps(),
 		globalData: make(map[string]any),
+		hooks:      NewHooksManager(),
 	}
 
 	for _, opt := range opts {
@@ -129,7 +131,7 @@ func (r *Engine) Load() error {
 }
 
 func (r *Engine) GlobalContext(data any) error {
-	globalContext, err := convertToContext(data)
+	globalContext, err := ConvertToContext(data)
 	if err != nil {
 		return fmt.Errorf("failed to convert global data to context: %w", err)
 	}
@@ -178,13 +180,31 @@ func (r *Engine) RegisterFilter(name string, fn func(input any, param any) (any,
 // by marshaling it to JSON and then unmarshaling. Be aware of the performance
 // implications and that this respects `json` struct tags.
 func (r *Engine) RenderString(templateContent string, data any, out ...io.Writer) (string, error) {
+
+	sharedMeta := make(map[string]any)
+
+	// execute pre hooks
+	for _, hook := range r.hooks.PreHooks() {
+		pctx := &HookContext{
+			Data:      data,
+			Metadata:  sharedMeta,
+			Template:  templateContent,
+			IsPreHook: true,
+		}
+		if err := hook(pctx); err != nil {
+			return "", fmt.Errorf("pre-hook failed: %w", err)
+		}
+		data = pctx.Data
+		templateContent = pctx.Template
+	}
+
 	// Create template from string content
 	tmpl, err := r.templateSet.FromString(templateContent)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse template string: %w", err)
 	}
 
-	viewContext, err := convertToContext(data)
+	viewContext, err := ConvertToContext(data)
 	if err != nil {
 		return "", fmt.Errorf("failed to convert data to context: %w", err)
 	}
@@ -196,6 +216,22 @@ func (r *Engine) RenderString(templateContent string, data any, out ...io.Writer
 
 	renderedStr := buf.String()
 
+	// execute post hooks
+	for _, hook := range r.hooks.PostHooks() {
+		pctx := &HookContext{
+			Data:     data,
+			Metadata: sharedMeta,
+			Template: templateContent,
+			Output:   renderedStr,
+		}
+		modifiedOutput, err := hook(pctx)
+		if err != nil {
+			return "", fmt.Errorf("post-hook failed: %w", err)
+		}
+		data = pctx.Data
+		renderedStr = modifiedOutput
+	}
+
 	// Write to provided writers
 	if len(out) > 0 {
 		for _, w := range out {
@@ -206,6 +242,16 @@ func (r *Engine) RenderString(templateContent string, data any, out ...io.Writer
 	}
 
 	return renderedStr, nil
+}
+
+// RegisterPreHook registers a pre-generation hook
+func (e *Engine) RegisterPreHook(hook PreHook) {
+	e.hooks.AddPreHook(hook)
+}
+
+// RegisterPostHook registers a post-generation hook
+func (e *Engine) RegisterPostHook(hook PostHook) {
+	e.hooks.AddPostHook(hook)
 }
 
 // Render intelligently renders either a template file or template string content.
@@ -237,6 +283,25 @@ func isTemplateContent(s string) bool {
 // by marshaling it to JSON and then unmarshaling. Be aware of the performance
 // implications and that this respects `json` struct tags.
 func (r *Engine) RenderTemplate(name string, data any, out ...io.Writer) (string, error) {
+
+	sharedMeta := make(map[string]any)
+	sharedMeta["ext"] = r.tplExt
+
+	// execute pre hooks
+	for _, hook := range r.hooks.PreHooks() {
+		pctx := &HookContext{
+			Data:         data,
+			Metadata:     sharedMeta,
+			TemplateName: name,
+			IsPreHook:    true,
+		}
+		if err := hook(pctx); err != nil {
+			return "", fmt.Errorf("pre-hook failed: %w", err)
+		}
+		data = pctx.Data
+		name = pctx.TemplateName
+	}
+
 	templatePath := name
 	if !strings.HasSuffix(templatePath, r.tplExt) {
 		templatePath += r.tplExt
@@ -247,7 +312,7 @@ func (r *Engine) RenderTemplate(name string, data any, out ...io.Writer) (string
 		return "", err
 	}
 
-	viewContext, err := convertToContext(data)
+	viewContext, err := ConvertToContext(data)
 	if err != nil {
 		return "", fmt.Errorf("failed to convert data to context: %w", err)
 	}
@@ -259,6 +324,22 @@ func (r *Engine) RenderTemplate(name string, data any, out ...io.Writer) (string
 
 	renderedStr := buf.String()
 
+	// execute post hooks
+	for _, hook := range r.hooks.PostHooks() {
+		pctx := &HookContext{
+			Data:         data,
+			Metadata:     sharedMeta,
+			TemplateName: name,
+			Output:       renderedStr,
+		}
+		modifiedOutput, err := hook(pctx)
+		if err != nil {
+			return "", fmt.Errorf("post-hook failed: %w", err)
+		}
+		data = pctx.Data
+		renderedStr = modifiedOutput
+	}
+
 	if len(out) > 0 {
 		for _, w := range out {
 			if _, err := w.Write([]byte(renderedStr)); err != nil {
@@ -266,6 +347,7 @@ func (r *Engine) RenderTemplate(name string, data any, out ...io.Writer) (string
 			}
 		}
 	}
+
 	return renderedStr, nil
 }
 
@@ -298,10 +380,11 @@ func defaultFuncMaps() map[string]any {
 	return out
 }
 
-// convertToContext converts any data to a pongo2.Context map.
+// ConvertToContext converts any data to a pongo2.Context map.
 // It always uses JSON marshaling/unmarshaling to ensure consistent behavior
 // and proper handling of structs with json tags.
-func convertToContext(data any) (pongo2.Context, error) {
+// TODO: Review to find a better way of doing this, don't want to expose pongo2.Context
+func ConvertToContext(data any) (pongo2.Context, error) {
 	viewContext := make(pongo2.Context)
 	switch data.(type) {
 	case nil:

@@ -7,6 +7,8 @@ A Go template engine wrapper around pongo2 that provides simplified configuratio
 - Template rendering with automatic struct-to-JSON conversion
 - Global data context shared across all templates
 - Dynamic filter registration at runtime
+- Composable pre/post hook system with priority scheduling
+- Pluggable hook helpers via `templatehooks` (timestamps, headers, validation, …)
 - File system and embedded FS support
 - Template caching with concurrent access safety
 - Built-in filters: `trim`, `lowerfirst`
@@ -70,6 +72,103 @@ renderer, err := template.NewRenderer(
     }),
 )
 ```
+
+### Hooks Overview
+
+The engine exposes **pre** and **post** hooks that run before data is rendered and after output is produced. Hooks work on a shared `HookContext`, so they can adjust data, metadata, template names/content, or final output.
+
+```go
+renderer.RegisterPreHook(func(ctx *template.HookContext) error {
+    // Stamp metadata other hooks or templates can reuse
+    if ctx.Metadata == nil {
+        ctx.Metadata = make(map[string]any)
+    }
+    ctx.Metadata["started_at"] = time.Now()
+    return nil
+})
+
+renderer.RegisterPostHook(func(ctx *template.HookContext) (string, error) {
+    // append diagnostic metadata to every rendered file
+    return fmt.Sprintf("%s\n// rendered at %s", ctx.Output, time.Now().Format(time.RFC3339)), nil
+})
+```
+
+#### Hook Priorities
+
+`HookManager` keeps pre/post hooks in priority buckets. The smallest priority runs first. A `HookManager` is handy when you want to assemble hooks elsewhere and apply them in priority order later.
+
+```go
+manager := template.NewHooksManager()
+
+var executionOrder []string
+
+manager.AddPreHook(func(ctx *template.HookContext) error {
+    executionOrder = append(executionOrder, "defaults")
+    return nil
+}, -10) // run before priority 0 hooks
+
+manager.AddPreHook(func(ctx *template.HookContext) error {
+    executionOrder = append(executionOrder, "validation")
+    return nil
+}) // defaults to priority 0
+
+for _, hook := range manager.PreHooks() {
+    renderer.RegisterPreHook(hook)
+}
+```
+
+#### Hook Chains
+
+Use `template.NewHookChain` to compose multiple hooks into a single unit you can register once. Chains are useful when you want to bundle reusable behaviors together.
+
+```go
+chain := template.NewHookChain(
+    template.WithPreHooksChain(
+        ensureDefaultsHook,
+        validateInputHook,
+    ),
+    template.WithPostHooksChain(
+        addGeneratedHeaderHook,
+        stripTrailingWhitespaceHook,
+    ),
+)
+
+renderer.RegisterPreHook(chain.AsPreHook())
+renderer.RegisterPostHook(chain.AsPostHook())
+```
+
+`ExecutePostHooks` automatically propagates the last hook output, so empty chains fall back to the renderer output without modifications.
+
+### Common Hook Helpers
+
+For batteries-included behavior, import `github.com/goliatone/go-template/templatehooks`. It ships configurable helpers for timestamps, copyright/license headers, generated warnings, validation, defaults, and more.
+
+```go
+import "github.com/goliatone/go-template/templatehooks"
+
+hooks := templatehooks.NewCommonHooks()
+
+renderer.RegisterPostHook(hooks.AddTimestampHook(
+    templatehooks.WithTimestampCommentPrefix("# "),
+    templatehooks.WithTimestampFormat(time.RFC822),
+    templatehooks.WithTimestampCondition(func(ctx *template.HookContext) bool {
+        return strings.HasSuffix(ctx.TemplateName, ".yaml")
+    }),
+))
+
+renderer.RegisterPostHook(hooks.AddLicenseHook(licenseText,
+    templatehooks.WithLicenseCommentStyle(templatehooks.CommentBlockStyle{
+        Start:      "/*",
+        LinePrefix: " * ",
+        End:        " */",
+    }),
+))
+
+renderer.RegisterPreHook(hooks.ValidateDataHook([]string{"name", "version"}))
+renderer.RegisterPreHook(hooks.SetDefaultsHook(map[string]any{"version": "0.0.1"}))
+```
+
+Each helper accepts functional options so you can adjust comment prefixes, timestamp layouts, execution conditions, or metadata without writing new hooks from scratch.
 
 ### Global Data Management
 
@@ -182,8 +281,30 @@ if err != nil {
 
 ## Thread Safety
 
-All methods are safe for concurrent use. Template caching uses read-write mutex for optimal performance.
+All methods are safe for concurrent use. Template caching uses read write mutex for optimal performance.
 
 ## Template Syntax
 
 Uses pongo2 syntax. See [pongo2 documentation](https://github.com/flosch/pongo2) for complete syntax reference.
+
+### Outputting Go Template Syntax
+
+When you need to output Go template syntax (like `{{.PackageName}}`) in your rendered templates, use the `verbatim` tag to prevent pongo2 from trying to parse it:
+
+```html
+<!-- Output literal Go template syntax -->
+name: {% verbatim %}{{.PackageName}}{% endverbatim %}
+config: {% verbatim %}{{.Config.Value}}{% endverbatim %}
+
+<!-- For larger blocks -->
+{% verbatim %}
+package {{.PackageName}}
+
+type Config struct {
+    Name  string `json:"{{.FieldName}}"`
+    Value string `json:"{{.FieldValue}}"`
+}
+{% endverbatim %}
+```
+
+This is particularly useful when generating Go code, configuration files, or other templates that use `{{` and `}}` syntax.
