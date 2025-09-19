@@ -66,7 +66,9 @@ func WithTimestampMessageFormat(message string) TimestampHookOption {
 	}
 }
 
-// AddTimestampHook adds a timestamp to generated files.
+// AddTimestampHook returns a post hook that prepends a timestamp comment to ctx.Output.
+// The hook never mutates ctx.Data or ctx.Metadata and simply returns the original
+// output when the configured condition evaluates to false.
 func (h *CommonHooks) AddTimestampHook(opts ...TimestampHookOption) template.PostHook {
 	cfg := TimestampHookConfig{
 		CommentPrefix: "// ",
@@ -121,7 +123,9 @@ func WithCopyrightCondition(condition template.HookCondition) CopyrightHookOptio
 	}
 }
 
-// AddCopyrightHook adds a copyright header.
+// AddCopyrightHook returns a post hook that prepends a single-line copyright
+// comment to ctx.Output. When the supplied copyright string is empty or the
+// condition blocks execution, the original output is returned unchanged.
 func (h *CommonHooks) AddCopyrightHook(copyright string, opts ...CopyrightHookOption) template.PostHook {
 	cfg := CopyrightHookConfig{
 		CommentPrefix: "// ",
@@ -210,7 +214,9 @@ var defaultLicenseStyle = CommentBlockStyle{
 	End:        " */",
 }
 
-// AddLicenseHook adds a license header
+// AddLicenseHook returns a post hook that emits a formatted comment block before
+// ctx.Output. The hook leaves ctx.Data untouched and falls back to the incoming
+// output when the license text is empty or the condition declines execution.
 func (h *CommonHooks) AddLicenseHook(license string, opts ...LicenseHookOption) template.PostHook {
 	cfg := LicenseHookConfig{
 		Style: defaultLicenseStyle,
@@ -269,7 +275,9 @@ func WithGeneratedWarningCondition(condition template.HookCondition) GeneratedWa
 	}
 }
 
-// AddGeneratedWarningHook adds a warning that the file is generated
+// AddGeneratedWarningHook returns a post hook that prefixes ctx.Output with a
+// configurable generated-code warning. When the condition is not met it simply
+// returns ctx.Output, leaving ctx.Data and ctx.Metadata unchanged.
 func (h *CommonHooks) AddGeneratedWarningHook(opts ...GeneratedWarningHookOption) template.PostHook {
 	cfg := GeneratedWarningHookConfig{
 		CommentPrefix: "// ",
@@ -293,7 +301,9 @@ func (h *CommonHooks) AddGeneratedWarningHook(opts ...GeneratedWarningHookOption
 	}
 }
 
-// RemoveTrailingWhitespaceHook removes trailing whitespace from lines
+// RemoveTrailingWhitespaceHook returns a post hook that trims trailing spaces
+// and tabs from every line in ctx.Output. The transformed text is returned and
+// stored back in the context; ctx.Data and ctx.Metadata are left untouched.
 func (h *CommonHooks) RemoveTrailingWhitespaceHook() template.PostHook {
 	return func(ctx *template.HookContext) (string, error) {
 		lines := strings.Split(ctx.Output, "\n")
@@ -304,8 +314,9 @@ func (h *CommonHooks) RemoveTrailingWhitespaceHook() template.PostHook {
 	}
 }
 
-// AddMetadataHook adds template metadata for tracking
-// By default, template_content is only populated by RenderString
+// AddMetadataHook returns a pre hook that stamps timing and template details
+// into ctx.Metadata. It expects ctx.Metadata to be a mutable map, but does not
+// alter ctx.Data or the template content.
 func (h *CommonHooks) AddMetadataHook() template.PreHook {
 	return func(ctx *template.HookContext) error {
 		ctx.Metadata["processed_at"] = time.Now()
@@ -315,7 +326,9 @@ func (h *CommonHooks) AddMetadataHook() template.PreHook {
 	}
 }
 
-// ValidateDataHook validates required data fields
+// ValidateDataHook returns a pre hook that ensures ctx.Data contains the
+// provided required field names. When ctx.Data is not already a map[string]any
+// it is replaced with a converted copy so downstream hooks see the updated map.
 func (h *CommonHooks) ValidateDataHook(requiredFields []string) template.PreHook {
 	return func(ctx *template.HookContext) error {
 		data, ok := ctx.Data.(map[string]any)
@@ -337,7 +350,9 @@ func (h *CommonHooks) ValidateDataHook(requiredFields []string) template.PreHook
 	}
 }
 
-// SetDefaultsHook sets default values for missing data fields
+// SetDefaultsHook returns a pre hook that injects default values into ctx.Data
+// for any missing keys. Non-map data is converted and written back to ctx.Data
+// so later hooks observe the enriched map alongside the added defaults.
 func (h *CommonHooks) SetDefaultsHook(defaults map[string]any) template.PreHook {
 	return func(ctx *template.HookContext) error {
 		data, ok := ctx.Data.(map[string]any)
