@@ -187,3 +187,25 @@ All methods are safe for concurrent use. Template caching uses read-write mutex 
 ## Template Syntax
 
 Uses pongo2 syntax. See [pongo2 documentation](https://github.com/flosch/pongo2) for complete syntax reference.
+
+### Outputting Go Template Syntax
+
+When you need to output Go template syntax (like `{{.PackageName}}`) in your rendered templates, use the `verbatim` tag to prevent pongo2 from trying to parse it:
+
+```html
+<!-- Output literal Go template syntax -->
+name: {% verbatim %}{{.PackageName}}{% endverbatim %}
+config: {% verbatim %}{{.Config.Value}}{% endverbatim %}
+
+<!-- For larger blocks -->
+{% verbatim %}
+package {{.PackageName}}
+
+type Config struct {
+    Name  string `json:"{{.FieldName}}"`
+    Value string `json:"{{.FieldValue}}"`
+}
+{% endverbatim %}
+```
+
+This is particularly useful when generating Go code, configuration files, or other templates that use `{{` and `}}` syntax.
