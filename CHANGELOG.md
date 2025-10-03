@@ -1,5 +1,23 @@
 # Changelog
 
+# [0.3.0](https://github.com/goliatone/go-template/compare/v0.2.0...v0.3.0) - (2025-10-03)
+
+## <!-- 13 -->📦 Bumps
+
+- Bump version: v0.3.0 ([21aa837](https://github.com/goliatone/go-template/commit/21aa837b72bf5b058390eab803d1b5142b8369dd))  - (goliatone)
+
+## <!-- 16 -->➕ Add
+
+- Register functions that implement pongo2 interface or regular func signature ([e9752d3](https://github.com/goliatone/go-template/commit/e9752d338d65da1468420fd0f27c0c1c0ff3389e))  - (goliatone)
+
+## <!-- 3 -->📚 Documentation
+
+- Update changelog for v0.2.0 ([eb79321](https://github.com/goliatone/go-template/commit/eb7932125634fef03f33d837a9e2eb0d37633012))  - (goliatone)
+
+## <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Update docs ([9e4984e](https://github.com/goliatone/go-template/commit/9e4984e66b77ebb5c6c3f80d0d962f80f28712d1))  - (goliatone)
+
 # [0.2.0](https://github.com/goliatone/go-template/compare/v0.1.0...v0.2.0) - (2025-09-19)
 
 ## <!-- 13 -->📦 Bumps
