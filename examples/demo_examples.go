@@ -1,9 +1,13 @@
+//go:build skip
+
 package main
 
 import (
 	"fmt"
 	"log"
+	"strings"
 
+	"github.com/flosch/pongo2/v6"
 	"github.com/goliatone/go-template"
 	"github.com/goliatone/go-template/templatehooks"
 )
@@ -14,6 +18,9 @@ func main() {
 
 	fmt.Println("\n=== Example: Custom Hook ===")
 	demoCustomHook()
+
+	fmt.Println("\n=== Example: Template Helpers & Filters ===")
+	demoTemplateHelpersAndFilters()
 }
 
 func demoCommonHooks() {
@@ -80,4 +87,49 @@ func demoCustomHook() {
 
 	fmt.Println("Generated with custom build tag:")
 	fmt.Println(result)
+}
+
+func demoTemplateHelpersAndFilters() {
+	renderer, err := template.NewRenderer(
+		template.WithBaseDir("testdata"),
+		template.WithTemplateFunc(map[string]any{
+			"is_even": func(v any) bool {
+				if n, ok := v.(int); ok {
+					return n%2 == 0
+				}
+				return false
+			},
+			"double": pongo2.FilterFunction(func(in *pongo2.Value, _ *pongo2.Value) (*pongo2.Value, *pongo2.Error) {
+				n, _ := in.Interface().(int)
+				return pongo2.AsValue(n * 2), nil
+			}),
+		}),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if err := renderer.GlobalContext(map[string]any{
+		"shout": func(v any) string {
+			return strings.ToUpper(fmt.Sprint(v))
+		},
+	}); err != nil {
+		log.Fatal(err)
+	}
+
+	tmpl := "" +
+		"Value: {{ value }}\n" +
+		"Even? {{ is_even(value) }}\n" +
+		"Double: {{ value|double }}\n" +
+		"Shout: {{ shout(name) }}\n"
+
+	output, err := renderer.Render(tmpl, map[string]any{
+		"value": 3,
+		"name":  "codex",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Println(output)
 }
