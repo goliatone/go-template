@@ -67,10 +67,43 @@ renderer, err := template.NewRenderer(
         "app_name": "MyApp",
         "version":  "1.0.0",
     }),
-    template.WithTemplateFunc(map[string]any{     // Custom template functions
+    template.WithTemplateFunc(map[string]any{     // Custom helpers & filters
         "myFilter": myFilterFunc,
     }),
 )
+```
+
+### Template Helpers and Filters
+
+`WithTemplateFunc` mirrors Django-style ergonomics: plain Go helpers become callable via
+`{{ helper(arg) }}` while filter-shaped functions continue to work with the pipe syntax.
+The engine auto-detects the correct registration strategy and synchronizes helpers with a
+live template set, so hot reloads pick up new functions immediately.
+
+Requires importing `github.com/flosch/pongo2/v6` for filter helpers:
+
+```go
+renderer, err := template.NewRenderer(
+    template.WithBaseDir("./templates"),
+    template.WithTemplateFunc(map[string]any{
+        // Plain helper exposed for direct calls
+        "isEven": func(v any) bool {
+            n, ok := v.(int)
+            return ok && n%2 == 0
+        },
+        // Pongo2 filter stays available through pipe syntax
+        "double": pongo2.FilterFunction(func(in *pongo2.Value, _ *pongo2.Value) (*pongo2.Value, *pongo2.Error) {
+            val, _ := in.Interface().(int)
+            return pongo2.AsValue(val * 2), nil
+        }),
+    }),
+)
+
+// `isEven` -> {{ isEven(value) }}
+// `double` -> {{ value|double }}
+
+// Additional calls to WithTemplateFunc or GlobalContext keep helpers/filters in sync
+// even after the renderer has loaded templates.
 ```
 
 ### Hooks Overview
