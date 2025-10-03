@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"maps"
+	"reflect"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -30,6 +31,8 @@ type Engine struct {
 	fs          fs.FS
 	baseDir     string
 	funcMap     map[string]any
+	filters     map[string]pongo2.FilterFunction
+	globals     map[string]any
 	globalData  map[string]any
 	hooks       *HookManager
 }
@@ -50,8 +53,62 @@ func WithBaseDir(dir string) Option {
 
 func WithTemplateFunc(funcs map[string]any) Option {
 	return func(e *Engine) {
+		if len(funcs) == 0 {
+			return
+		}
+
+		e.mu.Lock()
+		defer e.mu.Unlock()
+
+		if e.funcMap == nil {
+			e.funcMap = make(map[string]any)
+		}
+
+		if e.filters == nil {
+			e.filters = make(map[string]pongo2.FilterFunction)
+		}
+
+		if e.globals == nil {
+			e.globals = make(map[string]any)
+		}
+
 		maps.Copy(e.funcMap, funcs)
+
+		for name, fn := range funcs {
+			if filter, ok := asFilter(fn); ok {
+				e.filters[name] = filter
+				continue
+			}
+
+			e.globals[name] = fn
+		}
+
+		e.applyTemplateFuncsLocked()
 	}
+}
+
+func asFilter(fn any) (pongo2.FilterFunction, bool) {
+	if fn == nil {
+		return nil, false
+	}
+
+	if filter, ok := fn.(pongo2.FilterFunction); ok {
+		return filter, true
+	}
+
+	if filter, ok := fn.(func(*pongo2.Value, *pongo2.Value) (*pongo2.Value, *pongo2.Error)); ok {
+		return filter, true
+	}
+
+	return nil, false
+}
+
+func isCallable(v any) bool {
+	if v == nil {
+		return false
+	}
+
+	return reflect.TypeOf(v).Kind() == reflect.Func
 }
 
 func WithGlobalData(data map[string]any) Option {
@@ -75,6 +132,8 @@ func NewRenderer(opts ...Option) (*Engine, error) {
 		templates:  make(map[string]*pongo2.Template),
 		tplExt:     ".tpl",
 		funcMap:    defaultFuncMaps(),
+		filters:    make(map[string]pongo2.FilterFunction),
+		globals:    make(map[string]any),
 		globalData: make(map[string]any),
 		hooks:      NewHooksManager(),
 	}
@@ -111,40 +170,136 @@ func (r *Engine) Load() error {
 
 	ts := pongo2.NewSet("default", loaders...)
 
-	// we have to set the template set first
+	r.mu.Lock()
 	r.templateSet = ts
+	r.mu.Unlock()
 
 	// then we apply global data
 	if err := r.GlobalContext(r.globalData); err != nil {
 		return fmt.Errorf("failed to convert global data to context: %w", err)
 	}
 
-	for n, fn := range r.funcMap {
-		if !pongo2.FilterExists(n) {
-			if pfn, ok := fn.(func(*pongo2.Value, *pongo2.Value) (*pongo2.Value, *pongo2.Error)); ok {
-				pongo2.RegisterFilter(n, pfn)
-			}
-		}
-	}
+	r.mu.Lock()
+	r.applyTemplateFuncsLocked()
+	r.mu.Unlock()
 
 	return nil
 }
 
 func (r *Engine) GlobalContext(data any) error {
-	globalContext, err := ConvertToContext(data)
+	var callableGlobals map[string]any
+	payload := data
+
+	switch src := data.(type) {
+	case map[string]any:
+		if len(src) > 0 {
+			nonCallable := make(map[string]any, len(src))
+			for k, v := range src {
+				if !isCallable(v) {
+					nonCallable[k] = v
+					continue
+				}
+
+				if callableGlobals == nil {
+					callableGlobals = make(map[string]any)
+				}
+				callableGlobals[k] = v
+
+			}
+			payload = nonCallable
+		}
+	case pongo2.Context:
+		if len(src) > 0 {
+			nonCallable := make(map[string]any, len(src))
+			for k, v := range src {
+				if isCallable(v) {
+					nonCallable[k] = v
+					continue
+				}
+
+				if callableGlobals == nil {
+					callableGlobals = make(map[string]any)
+				}
+				callableGlobals[k] = v
+
+			}
+			payload = nonCallable
+		}
+	}
+
+	globalContext, err := ConvertToContext(payload)
 	if err != nil {
 		return fmt.Errorf("failed to convert global data to context: %w", err)
 	}
 
-	// store the global data for later use
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	maps.Copy(r.globalData, globalContext)
 
-	// if templateSet is available we update it immediately
 	if r.templateSet != nil {
+		if r.templateSet.Globals == nil {
+			r.templateSet.Globals = make(pongo2.Context)
+		}
 		r.templateSet.Globals.Update(globalContext)
 	}
 
+	if len(callableGlobals) > 0 {
+		if r.globals == nil {
+			r.globals = make(map[string]any)
+		}
+		maps.Copy(r.globals, callableGlobals)
+		r.applyTemplateFuncsLocked()
+	}
+
 	return nil
+}
+
+func (r *Engine) applyTemplateFuncsLocked() {
+	if r.filters == nil {
+		r.filters = make(map[string]pongo2.FilterFunction)
+	}
+
+	if r.globals == nil {
+		r.globals = make(map[string]any)
+	}
+
+	for name, fn := range r.funcMap {
+		if fn == nil {
+			continue
+		}
+
+		if filter, ok := asFilter(fn); ok {
+			if _, exists := r.filters[name]; !exists {
+				r.filters[name] = filter
+			}
+			continue
+		}
+
+		if _, exists := r.globals[name]; !exists {
+			r.globals[name] = fn
+		}
+	}
+
+	for name, filter := range r.filters {
+		if filter == nil {
+			continue
+		}
+
+		if !pongo2.FilterExists(name) {
+			_ = pongo2.RegisterFilter(name, filter)
+		}
+	}
+
+	if r.templateSet == nil {
+		return
+	}
+
+	if r.templateSet.Globals == nil {
+		r.templateSet.Globals = make(pongo2.Context)
+	}
+
+	maps.Copy(r.templateSet.Globals, r.globals)
 }
 
 func (r *Engine) RegisterFilter(name string, fn func(input any, param any) (any, error)) error {
