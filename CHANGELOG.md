@@ -1,5 +1,19 @@
 # Changelog
 
+# [0.3.1](https://github.com/goliatone/go-template/compare/v0.3.0...v0.3.1) - (2025-10-03)
+
+## <!-- 13 -->📦 Bumps
+
+- Bump version: v0.3.1 ([d943abe](https://github.com/goliatone/go-template/commit/d943abec2771c3131490401a75659546e96fb9f5))  - (goliatone)
+
+## <!-- 3 -->📚 Documentation
+
+- Update changelog for v0.3.0 ([328f020](https://github.com/goliatone/go-template/commit/328f020fd4589b2b284f3a3448047f54597f11b3))  - (goliatone)
+
+## <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Update examples ([34fa2df](https://github.com/goliatone/go-template/commit/34fa2df5416ea503ccd85778cf231d54686991cf))  - (goliatone)
+
 # [0.3.0](https://github.com/goliatone/go-template/compare/v0.2.0...v0.3.0) - (2025-10-03)
 
 ## <!-- 13 -->📦 Bumps
