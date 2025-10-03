@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/flosch/pongo2/v6"
 	"github.com/goliatone/go-template"
 	"github.com/stretchr/testify/require"
 )
@@ -327,6 +329,190 @@ func TestDefaultFilters_ChainedFilters(t *testing.T) {
 	}
 }
 
+func TestWithTemplateFuncRegistersPlainHelper(t *testing.T) {
+	dir, cleanup := createTempTemplates(t)
+	defer cleanup()
+
+	content := `{{ is_even(value) }}`
+	writeTemplate(t, dir, "helper", content)
+
+	isEven := func(v any) bool {
+		switch val := v.(type) {
+		case int:
+			return val%2 == 0
+		case int64:
+			return val%2 == 0
+		case float64:
+			return int(val)%2 == 0
+		default:
+			return false
+		}
+	}
+
+	renderer, err := template.NewRenderer(
+		template.WithBaseDir(dir),
+		template.WithTemplateFunc(map[string]any{
+			"is_even": isEven,
+		}),
+	)
+	require.NoError(t, err)
+
+	result, err := renderer.RenderTemplate("helper", map[string]any{"value": 4})
+	require.NoError(t, err)
+	require.Equal(t, "true", strings.ToLower(strings.TrimSpace(result)))
+}
+
+func TestWithTemplateFuncRegistersFilterHelpers(t *testing.T) {
+	dir, cleanup := createTempTemplates(t)
+	defer cleanup()
+
+	content := `{{ value|times_two }}`
+	writeTemplate(t, dir, "filter_helper", content)
+
+	timesTwo := func(in *pongo2.Value, _ *pongo2.Value) (*pongo2.Value, *pongo2.Error) {
+		num := in.Interface()
+		var f float64
+		switch v := num.(type) {
+		case int:
+			f = float64(v)
+		case int64:
+			f = float64(v)
+		case float64:
+			f = v
+		default:
+			return pongo2.AsValue(0), nil
+		}
+		if f == math.Trunc(f) {
+			return pongo2.AsValue(int64(f * 2)), nil
+		}
+		return pongo2.AsValue(f * 2), nil
+	}
+
+	renderer, err := template.NewRenderer(
+		template.WithBaseDir(dir),
+		template.WithTemplateFunc(map[string]any{
+			"times_two": pongo2.FilterFunction(timesTwo),
+		}),
+	)
+	require.NoError(t, err)
+
+	result, err := renderer.RenderTemplate("filter_helper", map[string]any{"value": 5})
+	require.NoError(t, err)
+	require.Equal(t, "10", strings.TrimSpace(result))
+}
+
+func TestWithTemplateFuncMultipleInvocationsSurviveReload(t *testing.T) {
+	dir, cleanup := createTempTemplates(t)
+	defer cleanup()
+
+	comboContent := `double: {{ value|reload_double }}, positive: {{ is_positive(value) }}`
+	writeTemplate(t, dir, "combo", comboContent)
+
+	reloadDouble := func(in *pongo2.Value, _ *pongo2.Value) (*pongo2.Value, *pongo2.Error) {
+		num := in.Interface()
+		var f float64
+		switch v := num.(type) {
+		case int:
+			f = float64(v)
+		case int64:
+			f = float64(v)
+		case float64:
+			f = v
+		default:
+			return pongo2.AsValue(0), nil
+		}
+		if f == math.Trunc(f) {
+			return pongo2.AsValue(int64(f * 2)), nil
+		}
+		return pongo2.AsValue(f * 2), nil
+	}
+
+	renderer, err := template.NewRenderer(
+		template.WithBaseDir(dir),
+		template.WithTemplateFunc(map[string]any{
+			"reload_double": pongo2.FilterFunction(reloadDouble),
+		}),
+	)
+	require.NoError(t, err)
+
+	isPositive := func(v any) bool {
+		switch val := v.(type) {
+		case int:
+			return val >= 0
+		case int64:
+			return val >= 0
+		case float64:
+			return val >= 0
+		default:
+			return false
+		}
+	}
+	template.WithTemplateFunc(map[string]any{"is_positive": isPositive})(renderer)
+
+	result, err := renderer.RenderTemplate("combo", map[string]any{"value": 3})
+	require.NoError(t, err)
+	require.Equal(t, "double: 6, positive: true", strings.ToLower(strings.TrimSpace(result)))
+
+	// Add another helper after the engine is live and ensure reload keeps all helpers
+	writeTemplate(t, dir, "extended", `double: {{ value|reload_double }}, negative: {{ is_negative(value) }}`)
+	isNegative := func(v any) bool {
+		switch val := v.(type) {
+		case int:
+			return val < 0
+		case int64:
+			return val < 0
+		case float64:
+			return val < 0
+		default:
+			return false
+		}
+	}
+	template.WithTemplateFunc(map[string]any{"is_negative": isNegative})(renderer)
+
+	require.NoError(t, renderer.Load())
+
+	negResult, err := renderer.RenderTemplate("extended", map[string]any{"value": -4})
+	require.NoError(t, err)
+	require.Equal(t, "double: -8, negative: true", strings.ToLower(strings.TrimSpace(negResult)))
+
+	// Ensure the initial template still works post-reload
+	comboResult, err := renderer.RenderTemplate("combo", map[string]any{"value": 2})
+	require.NoError(t, err)
+	require.Equal(t, "double: 4, positive: true", strings.ToLower(strings.TrimSpace(comboResult)))
+}
+
+func TestGlobalContextCallableUpdatesTemplateSet(t *testing.T) {
+	dir, cleanup := createTempTemplates(t)
+	defer cleanup()
+
+	writeTemplate(t, dir, "global_helper", `value: {{ call_me() }}`)
+
+	renderer, err := template.NewRenderer(template.WithBaseDir(dir))
+	require.NoError(t, err)
+
+	callMe := func() string { return "global" }
+	require.NoError(t, renderer.GlobalContext(map[string]any{"call_me": callMe}))
+
+	result, err := renderer.RenderTemplate("global_helper", nil)
+	require.NoError(t, err)
+	require.Equal(t, "value: global", strings.TrimSpace(result))
+
+	writeTemplate(t, dir, "global_helper_args", `shout: {{ shout(name) }}`)
+	shout := func(v any) string { return strings.ToUpper(fmt.Sprint(v)) }
+	require.NoError(t, renderer.GlobalContext(map[string]any{"shout": shout}))
+
+	require.NoError(t, renderer.Load())
+
+	shoutResult, err := renderer.RenderTemplate("global_helper_args", map[string]any{"name": "go"})
+	require.NoError(t, err)
+	require.Equal(t, "shout: GO", strings.TrimSpace(shoutResult))
+
+	// Original callable should still be available after reload
+	result, err = renderer.RenderTemplate("global_helper", nil)
+	require.NoError(t, err)
+	require.Equal(t, "value: global", strings.TrimSpace(result))
+}
+
 // createFilterTemplates creates a temporary directory with a template file
 // containing the specified template content for testing filters
 func createFilterTemplates(t *testing.T, templateContent string) (string, func()) {
@@ -344,6 +530,13 @@ func createFilterTemplates(t *testing.T, templateContent string) (string, func()
 	}
 
 	return dir, cleanup
+}
+
+func writeTemplate(t *testing.T, dir, name, content string) {
+	t.Helper()
+
+	filename := filepath.Join(dir, name+".tpl")
+	require.NoError(t, os.WriteFile(filename, []byte(content), fs.ModePerm))
 }
 
 func TestEngine_GlobalData(t *testing.T) {
